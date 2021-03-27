@@ -29,15 +29,15 @@ class TCPCamera(object):
         :return: Camera object.
         :rtype: TCPCamera
         """
-        print "Connecting to camera..."
+        print("Connecting to camera...")
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._socket.settimeout(0.6)
         try:
             self._socket.connect((self._tcp_host, self._tcp_port))
         except:
-            print "Could not connect to camera on control channel"
+            print("Could not connect to camera on control channel")
             return None
-        print "Camera connected"
+        print("Camera connected")
         self._socket.settimeout(0.2)
         return self
 
@@ -53,7 +53,7 @@ class TCPCamera(object):
             self._socket.send(binascii.unhexlify(com))
             return True
         except Exception as e:
-            print com, e
+            print(com, e)
             return False
 
     def read(self, amount=1):
@@ -61,11 +61,11 @@ class TCPCamera(object):
         while True:
             try:
                 msg = binascii.hexlify(self._socket.recv(amount))
-            except socket.timeout, e:
-                print "No data from camera socket"
+            except socket.timeout as e:
+                print("No data from camera socket")
                 break
-            except socket.error, e:
-                print "Camera socket read error: " + str(e)
+            except socket.error as e:
+                print("Camera socket read error: " + str(e))
                 break
             total = total + msg
             if msg == "ff":
@@ -104,7 +104,7 @@ class PTZOptics20x(TCPCamera):
         """
         if super(self.__class__, self).init() is None:
             return None
-        print "Camera controller initialized"
+        print("Camera controller initialized")
         return self
         
     def panTiltOngoing(self):
@@ -122,6 +122,31 @@ class PTZOptics20x(TCPCamera):
         :rtype: bool
         """
         super(self.__class__, self).command(com)
+
+    def si2v(self, value):
+        # first, handle the possibility of signed integer values
+        if value > 32767:
+            value = 32767
+        if value < -32768:
+            value = -32768
+        if value < 0:
+            value = 0xffff + value + 1; # this is the magic
+
+        return self.i2v(value)
+
+    def i2v(self, value):
+        # return word as dword in visca format
+        # packets are not allowed to be 0xff
+        # so for numbers the first nibble is 0b0000
+        # and 0xfd gets encoded into 0x0f 0x0d
+        ms = ( value & 0b1111111100000000 ) >> 8
+        ls = value & 0b0000000011111111
+        p = ( ms & 0b11110000 ) >> 4
+        r = ( ls & 0b11110000 ) >> 4
+        q = ms & 0b1111
+        s = ls & 0b1111
+
+        return [ format(p, 'x'), format(q, 'x'), format(r, 'x'), format(s, 'x') ]
 
     @staticmethod
     def multi_replace(text, rep):
@@ -271,13 +296,17 @@ class PTZOptics20x(TCPCamera):
         speed_hex = "%X" % speed
         speed_hex = '0' + speed_hex if len(speed_hex) < 2 else speed_hex
 
-        pan_hex = "%X" % pan
-        pan_hex = pan_hex if len(pan_hex) > 3 else ("0" * (4 - len(pan_hex))) + pan_hex
-        pan_hex = "0" + "0".join(pan_hex)
+        pan_hex = self.si2v(pan)
+        pan_hex = '0'.join(pan_hex)
+        pan_hex = '0' + pan_hex
+        #pan_hex = pan_hex if len(pan_hex) > 3 else ("0" * (4 - len(pan_hex))) + pan_hex
+        #pan_hex = "0" + "0".join(pan_hex)
         
-        tilt_hex = "%X" % tilt
-        tilt_hex = tilt_hex if len(tilt_hex) > 3 else ("0" * (4 - len(tilt_hex))) + tilt_hex
-        tilt_hex = "0" + "0".join(tilt_hex)
+        tilt_hex = self.si2v(tilt)
+        tilt_hex = '0'.join(tilt_hex)
+        tilt_hex = '0' + tilt_hex
+        #tilt_hex = tilt_hex if len(tilt_hex) > 3 else ("0" * (4 - len(tilt_hex))) + tilt_hex
+        #tilt_hex = "0" + "0".join(tilt_hex)
             
         s = '81010603VVWWYYYYZZZZFF'.replace(
             'VV', speed_hex).replace(
@@ -391,3 +420,23 @@ class PTZOptics20x(TCPCamera):
 
     def right_down(self, pan, tilt):
         return self._move('81010601VVWW0202FF', pan, tilt)
+
+    def autofocus(self):
+        return self.comm('8101043802FF')
+
+    def focus(self, type='standard', near=True, p=0):
+        s = ''
+        if type == 'standard':
+            where = "03" if near else "02"
+            s = '81010408NNFF'.replace('NN', where)
+        else:
+            where = "3{0}".format(str(p)) if near else "2{0}".format(str(p))
+            s = '81010408NNFF'.replace('NN', where)
+
+        self.comm(s)
+
+    def focus_lock(self, lock=True):
+        locked = "02" if lock else "03"
+        s = '810a0468{0}FF'.format(locked)
+        self.comm(s)
+

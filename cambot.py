@@ -7,8 +7,7 @@ import json
 import imp
 import time, sys, os, signal
 
-sys.path.append('../pysca')
-from pysca import pysca
+import CameraController
 
 from RealtimeInterval import RealtimeInterval
 from CVParameterGroup import CVParameterGroup
@@ -34,10 +33,10 @@ class Face():
     lastSeenTime = 0
     firstSeenTime = 0
     hcenter = -1
-    
+
     def __init__(self, cfg):
         self._recentThresholdSeconds = cfg["recentThresholdSeconds"]
-    
+
     def found(self, hcenter):
         now = time.time()
         if not self.visible:
@@ -49,7 +48,7 @@ class Face():
         self.recentlyVisible = True
         self.didDisappear = False
         return
-        
+
     def lost(self):
         now = time.time()
         if self.visible:
@@ -63,7 +62,7 @@ class Face():
             self.recentlyVisible = False
         self.visible = False
         return
-        
+
     def age(self):
         now = time.time()
         if self.firstSeenTime:
@@ -79,36 +78,36 @@ class Subject():
     isCentered = True
     isFarLeft = False
     isFarRight = False
-    
+
     def __init__(self, cfg):
         self.centeredPercentVariance = cfg["centeredPercentVariance"]
         self.offCenterPercentVariance = cfg["offCenterPercentVariance"]
-    
+
     def manageOffsetHistory(self, rawOffset):
         self.offsetHistory.append(rawOffset)
         if (len(self.offsetHistory) > 10):
             self.offsetHistory.pop(0)
         return
-        
+
     def isVolatile(self):
         if len(self.offsetHistory) < 2:
             return True
         # volatility is shown when consecutive offsets have large
         # deltas. We will calculate the deltas and average them.
         deltas = []
-        history = iter(self.offsetHistory)
-        prior = history.next()
-        current = history.next()
         try:
+            history = iter(self.offsetHistory)
+            prior = next(history)
+            current = next(history)
             while True:
                 deltas.append(abs(current - prior))
                 prior = current
-                current = history.next()
+                current = next(history)
         except StopIteration:
             pass
         avgDelta = float(sum(deltas) / len(deltas))
         return True if avgDelta > 9 else False
-        
+
     def evaluate(self, face, scene):
         if not face.visible:
             if not face.recentlyVisible:
@@ -122,9 +121,9 @@ class Subject():
             # If we still have a recent subject location, keep it
             self.isPresent = True
             return
-        
-        # We have a subject and can characterize location in the frame 
-        self.isPresent = True    
+
+        # We have a subject and can characterize location in the frame
+        self.isPresent = True
         self.hcenter = face.hcenter
         frameCenter = scene.imageWidth / 2.0
         self.offset = frameCenter - self.hcenter
@@ -163,8 +162,9 @@ class Subject():
         if self.isFarRight:
             msg += "..>"
         return msg
-        
+
 class Camera():
+    camera = None
     cvcamera = None
     cvreader = None
     width = 0
@@ -173,21 +173,23 @@ class Camera():
     tiltPos = 0
     zoomPos = -1
     _badPTZcount = 0
-    
-    def __init__(self, cfg, usbdevnum):
+
+    def __init__(self, cfg):
         # Start by establishing control connection
-        pysca.connect(cfg['socket'])
+        self.camera = CameraController.PTZOptics20x(cfg['socket'], cfg['port'])
+        self.camera.init()
+        print(self.camera._tcp_host, self.camera._tcp_port)
 
         # Open video stream as CV camera
-        self.cvcamera = cv2.VideoCapture(usbdevnum)
+        self.cvcamera = cv2.VideoCapture(cfg['stream'])
         self.width = int(self.cvcamera.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cvcamera.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.cvreader = CameraReaderAsync.CameraReaderAsync(self.cvcamera)
-    
+
     def lostPTZfeed(self):
         return True
         # return False if self._badPTZcount < 5 else True
-            
+
     def updatePTZ(self):
         self._badPTZcount += 1
         return
@@ -207,7 +209,7 @@ class Camera():
         # self.tiltPos = nowTiltPos
         # self.zoomPos = nowZoomPos
 
-class Stage():	
+class Stage():
     def __init__(self, cfg):
         self.homePan = cfg['homePan']
         self.homeTilt = cfg['homeTilt']
@@ -216,7 +218,7 @@ class Stage():
         self.maxRightPan = cfg['maxRightPan']
         self.trackingZoom = cfg['trackingZoom']
         self.trackingTiltAdjustment = cfg['trackingTiltAdjustment']
-        
+
 class Scene():
     homePauseTimer = None
     zoomTimer = None
@@ -224,7 +226,7 @@ class Scene():
     subjectVolatile = True
     confidence = 0.01
     requestedZoomPos = -1
-    
+
     def __init__(self, cfg, camera, stage):
         self.imageWidth = cfg["imageWidth"]
         self.minConfidence = cfg["minConfidence"]
@@ -234,13 +236,12 @@ class Scene():
         self.zoomTimer = RealtimeInterval(cfg["zoomMaxSecondsSafety"], False)
 
     def goHome(self, camera, stage):
-        pysca.pan_tilt(1, 0, 0, blocking=True)
-        pysca.pan_tilt(1, self.returnHomeSpeed, self.returnHomeSpeed, stage.homePan, stage.homeTilt, blocking=True)
-        pysca.set_zoom(1, stage.homeZoom, blocking=True)
+        camera.camera.home()
+        camera.camera.zoomto(stage.homeZoom)
         self.atHome = True
         self.requestedZoomPos = stage.homeZoom
         time.sleep(self.homePauseSeconds)
-        
+
     def trackSubject(self, camera, stage, subject, face, faceCount):
         self.confidence = 100.0/faceCount if faceCount else 0
         self.subjectVolatile = subject.isVolatile()
@@ -251,47 +252,48 @@ class Scene():
         or self.subjectVolatile \
         or subject.isCentered:
             # Stop all tracking motion
-            pysca.pan_tilt(1, 0, 0, blocking=True)
+            # camera.camera.home()
+            print('Go home')
 
         # Should we return to home position?
         if not face.recentlyVisible \
         and not self.atHome:
-            self.goHome(camera, stage)
+            #self.goHome(camera, stage)
             return
 
         # Initiate no new tracking action unless face has been seen recently
         if not face.recentlyVisible:
             return
-         
-        # Adjust to tracking zoom and tilt (closer)    
+
+        # Adjust to tracking zoom and tilt (closer)
         if subject.isCentered \
         and not self.subjectVolatile \
         and self.requestedZoomPos > 0 \
         and self.requestedZoomPos < stage.trackingZoom:
-            pysca.pan_tilt(1, 0, 5, 0, stage.trackingTiltAdjustment, relative=True, blocking=True)
-            pysca.set_zoom(1, stage.trackingZoom, blocking=True)
+            camera.camera.gotoIncremental(0, stage.trackingTiltAdjustment, 5)
+            camera.camera.zoomto(stage.trackingZoom)
             self.requestedZoomPos = stage.trackingZoom
-        
+
         if subject.isFarLeft:
-            pysca.pan_tilt(1, -2)
+            camera.camera.gotoIncremental(-2, 0, 5)
             self.atHome = False
         elif subject.isFarRight:
-            pysca.pan_tilt(1, 2)
+            camera.camera.gotoIncremental(2, 0, 5)
             self.atHome = False
-                
+
         return
-    
+
 def printif(message):
     if g_debugMode:
-        print message
+        print(message)
 
 def main(cfg):
-    camera = Camera(cfg['camera'], args["usbDeviceNum"])
+    camera = Camera(cfg['camera'])
     stage = Stage(cfg['stage'])
     subject = Subject(cfg['subject'])
     face = Face(cfg['face'])
     scene = Scene(cfg['scene'], camera, stage)
-    
+
     fpsDisplay = True
     fpsCounter = WeightedFramerateCounter()
     fpsInterval = RealtimeInterval(10.0, False)
@@ -309,7 +311,7 @@ def main(cfg):
 
             raw = imutils.resize(raw, width=scene.imageWidth)
             gray = cv2.cvtColor(raw, cv2.COLOR_BGR2GRAY)
-            
+
             #~ panMsg = "*" if camera.controller.panTiltOngoing() else "-"
             #~ tiltMsg = "-"
             #~ zoomMsg =  "*" if camera.controller.zoomOngoing() else "-"
@@ -320,7 +322,7 @@ def main(cfg):
                         #~ cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             #~ cv2.putText(raw, "Z {} #{}".format(zoomMsg, camera.zoomPos), (5, 75),
                         #~ cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            
+
             # scan for faces here against a grayscale frame
             cascPath = "haarcascade_frontalface_default.xml"
             faceCascade = cv2.CascadeClassifier(cascPath)
@@ -335,7 +337,7 @@ def main(cfg):
             #~ printif("Found {0} faces!".format(len(faces)))
             if len(faces):
                 (x, __, w, __) = faces[0]
-                face.found(x + w/2)                
+                face.found(x + w/2)
             else:
                 face.lost()
             subject.evaluate(face, scene)
@@ -351,13 +353,13 @@ def main(cfg):
             #~ # show the output image with decorations
             #~ # (not easy to do on Docker)
             if g_debugMode:
-                cv2.imshow("Output", raw) 
+                cv2.imshow("Output", raw)
 
         if fpsDisplay and fpsInterval.hasElapsed():
-            print "{0:.1f} fps (processing)".format(fpsCounter.getFramerate())
+            print("%3.2f fps (processing)" % fpsCounter.getFramerate())
             #~ if camera.cvreader is not None:
                 #~ print "{0:.1f} fps (camera)".format(camera.cvreader.fps.getFramerate())
-            print "Face has been seen for {0:.1f} seconds".format(face.age())
+            print("Face has been seen for %3.2f seconds" % face.age())
 
         # Monitor for control keystrokes in debug mode
         if g_debugMode:
@@ -374,7 +376,7 @@ def main(cfg):
     if camera.cvcamera is not None:
         camera.cvcamera.release()
     if g_debugMode:
-        cv2.destroyAllWindows() 
+        cv2.destroyAllWindows()
 
     printif("End of main function")
 
