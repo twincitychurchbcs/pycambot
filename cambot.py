@@ -303,31 +303,43 @@ class Scene():
 
         # Initiate no new tracking action unless face has been seen recently
         if not face.recentlyVisible:
+            camera.camera.stop()
             return
 
         # Adjust to tracking zoom and tilt (closer)
-        if subject.isHCentered \
-        and not self.subjectVolatile \
-        and self.requestedZoomPos > 0 \
-        and self.requestedZoomPos < stage.trackingZoom:
-            camera.camera.gotoIncremental(0, stage.trackingTiltAdjustment, 5)
-            camera.camera.zoomto(stage.trackingZoom)
-            self.requestedZoomPos = stage.trackingZoom
+        #if subject.isHCentered \
+        #and not self.subjectVolatile \
+        #and self.requestedZoomPos > 0 \
+        #and self.requestedZoomPos < stage.trackingZoom:
+        #    camera.camera.gotoIncremental(0, stage.trackingTiltAdjustment, 5)
+        #    camera.camera.zoomto(stage.trackingZoom)
+        #    self.requestedZoomPos = stage.trackingZoom
 
-        if subject.isFarLeft:
-            camera.camera.gotoIncremental(-2, 0, 5)
+        if subject.isFarTop or subject.isFarBottom:
+            if subject.isFarTop:
+                if subject.isFarLeft:
+                    camera.camera.left_up(2, 2)
+                elif subject.isFarRight:
+                    camera.camera.right_up(2, 2)
+                else:
+                    camera.camera.up(2)
+            elif subject.isFarBottom:
+                if subject.isFarLeft:
+                    camera.camera.left_down(2, 2)
+                elif subject.isFarRight:
+                    camera.camera.right_down(2, 2)
+                else:
+                    camera.camera.down(2)
             self.atHome = False
-        elif subject.isFarRight:
-            camera.camera.gotoIncremental(2, 0, 5)
+        elif subject.isFarLeft or subject.isFarRight:
+            if subject.isFarLeft:
+                camera.camera.left(2)
+            else:
+                camera.camera.right(2)
             self.atHome = False
-
-        if subject.isFarTop:
-            #camera.camera.gotoIncremental(0, 1, 5)
+        else:
+            camera.camera.stop()
             self.atHome = False
-        elif subject.isFarBottom:
-            #camera.camera.gotoIncremental(0, -1, 5)
-            self.atHome = False
-
         return
 
 def printif(message):
