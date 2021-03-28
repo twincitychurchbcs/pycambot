@@ -37,13 +37,14 @@ class Face():
     def __init__(self, cfg):
         self._recentThresholdSeconds = cfg["recentThresholdSeconds"]
 
-    def found(self, hcenter):
+    def found(self, hcenter, vcenter):
         now = time.time()
         if not self.visible:
             self.firstSeenTime = now
         self.lastSeenTime = now
 
         self.hcenter = hcenter
+        self.vcenter = vcenter
         self.visible = True
         self.recentlyVisible = True
         self.didDisappear = False
@@ -72,12 +73,17 @@ class Face():
 
 class Subject():
     hcenter = -1
-    offset = 0
+    vcenter = -1
+    hoffset = 0
+    voffset = 0
     offsetHistory = []
+    offsetVHistory = []
     isPresent = False
     isCentered = True
     isFarLeft = False
     isFarRight = False
+    isFarTop = False
+    isFarBottom = False
 
     def __init__(self, cfg):
         self.centeredPercentVariance = cfg["centeredPercentVariance"]
@@ -87,6 +93,12 @@ class Subject():
         self.offsetHistory.append(rawOffset)
         if (len(self.offsetHistory) > 10):
             self.offsetHistory.pop(0)
+        return
+
+    def manageVOffsetHistory(self, rawOffset):
+        self.offsetVHistory.append(rawOffset)
+        if (len(self.offsetVHistory) > 10):
+            self.offsetVHistory.pop(0)
         return
 
     def isVolatile(self):
@@ -113,11 +125,15 @@ class Subject():
             if not face.recentlyVisible:
                 # If we haven't seen a face in a while, reset
                 self.hcenter = -1
+                self.vcenter = -1
                 self.offset = 0
+                self.voffset = 0
                 self.isPresent = False
-                self.isCentered = True
+                self.isHCentered = True
                 self.isFarLeft = False
                 self.isFarRight = False
+                self.isFarTop = False
+                self.isFarBottom = False
             # If we still have a recent subject location, keep it
             self.isPresent = True
             return
@@ -125,26 +141,48 @@ class Subject():
         # We have a subject and can characterize location in the frame
         self.isPresent = True
         self.hcenter = face.hcenter
-        frameCenter = scene.imageWidth / 2.0
-        self.offset = frameCenter - self.hcenter
-        percentVariance = (self.offset * 2.0 / frameCenter) * 100
+        self.vcenter = face.vcenter
+        frameHCenter = scene.imageWidth / 2.0
+        frameVCenter = scene.imageHeight / 2.0
+        # print(f"face hcenter, {self.hcenter} | frame horz center, {frameHCenter} | face vcenter, {self.vcenter} | frame ver center, {frameVCenter}")
+            
+        self.offset = frameHCenter - self.hcenter
+        self.voffset = frameVCenter - self.vcenter
+        percentVariance = (self.offset * 2.0 / frameHCenter) * 100
+        percentVVariance = (self.voffset * 2.0 / frameVCenter) * 100
         self.manageOffsetHistory(percentVariance)
+        self.manageVOffsetHistory(percentVVariance)
         #~ print "hcenter: {0:d}; offset: {1:f}; variance: {2:f}".format(
             #~ self.hcenter,
             #~ self.offset,
             #~ percentVariance)
         if abs(percentVariance) <= self.centeredPercentVariance:
-            self.isCentered = True
+            self.isHCentered = True
         else:
-            self.isCentered = False
+            self.isHCentered = False
+
+        if abs(percentVVariance) <= self.centeredPercentVariance:
+            self.isVCentered = True
+        else:
+            self.isVCentered = False
+
         if abs(percentVariance) > self.offCenterPercentVariance:
-            if self.hcenter < frameCenter:
+            if self.hcenter < frameHCenter:
                 self.isFarLeft = True
             else:
                 self.isFarRight = True
         else:
             self.isFarLeft = False
             self.isFarRight = False
+
+        if abs(percentVVariance) > self.offCenterPercentVariance:
+            if self.vcenter < frameVCenter:
+                self.isFarTop = True
+            else:
+                self.isFarBottom = True
+        else:
+            self.isFarTop = False
+            self.isFarBottom = False
         return
 
     def text(self):
@@ -153,9 +191,9 @@ class Subject():
         if not self.isPresent:
             msg += "..."
             return msg
-        if not self.isCentered and not self.isFarLeft and not self.isFarRight:
+        if not self.isHCentered and not self.isFarLeft and not self.isFarRight:
             msg += "oOo"
-        if self.isCentered:
+        if self.isHCentered:
             msg += ".|."
         if self.isFarLeft:
             msg += "<.."
@@ -229,6 +267,7 @@ class Scene():
 
     def __init__(self, cfg, camera, stage):
         self.imageWidth = cfg["imageWidth"]
+        self.imageHeight = cfg["imageHeight"]
         self.minConfidence = cfg["minConfidence"]
         self.returnHomeSpeed = cfg["returnHomeSpeed"]
         self.homePauseSeconds = cfg["homePauseSeconds"]
@@ -250,15 +289,16 @@ class Scene():
         if self.confidence < self.minConfidence \
         or not face.recentlyVisible \
         or self.subjectVolatile \
-        or subject.isCentered:
+        or subject.isHCentered:
             # Stop all tracking motion
-            # camera.camera.home()
-            print('Go home')
+            camera.camera.stop()
+            #print(f"confidence, {self.confidence}| min confidence, {self.minConfidence}")
+            #print('Go home')
 
         # Should we return to home position?
         if not face.recentlyVisible \
         and not self.atHome:
-            #self.goHome(camera, stage)
+            camera.camera.stop()
             return
 
         # Initiate no new tracking action unless face has been seen recently
@@ -266,7 +306,7 @@ class Scene():
             return
 
         # Adjust to tracking zoom and tilt (closer)
-        if subject.isCentered \
+        if subject.isHCentered \
         and not self.subjectVolatile \
         and self.requestedZoomPos > 0 \
         and self.requestedZoomPos < stage.trackingZoom:
@@ -279,6 +319,13 @@ class Scene():
             self.atHome = False
         elif subject.isFarRight:
             camera.camera.gotoIncremental(2, 0, 5)
+            self.atHome = False
+
+        if subject.isFarTop:
+            #camera.camera.gotoIncremental(0, 1, 5)
+            self.atHome = False
+        elif subject.isFarBottom:
+            #camera.camera.gotoIncremental(0, -1, 5)
             self.atHome = False
 
         return
@@ -309,7 +356,7 @@ def main(cfg):
             ### This is the primary frame processing block
             fpsCounter.tick()
 
-            raw = imutils.resize(raw, width=scene.imageWidth)
+            raw = imutils.resize(raw, width=scene.imageWidth, height=scene.imageHeight)
             gray = cv2.cvtColor(raw, cv2.COLOR_BGR2GRAY)
 
             #~ panMsg = "*" if camera.controller.panTiltOngoing() else "-"
@@ -336,8 +383,9 @@ def main(cfg):
 
             #~ printif("Found {0} faces!".format(len(faces)))
             if len(faces):
-                (x, __, w, __) = faces[0]
-                face.found(x + w/2)
+                (x, y, w, h) = faces[0]
+                # print(f"face {faces[0]}")
+                face.found(x + w/2, y + h/2)
             else:
                 face.lost()
             subject.evaluate(face, scene)
